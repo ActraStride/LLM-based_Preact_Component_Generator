@@ -128,24 +128,24 @@ class GeminiClient(BaseLLMClient):
             
             return f"""{original_prompt}
 
-IMPORTANT: Respond with a valid JSON array of objects. Each object must have these fields:
-{schema_example}
+            IMPORTANT: Respond with a valid JSON array of objects. Each object must have these fields:
+            {schema_example}
 
-Example format:
-[
-  {{"path": "...", "content": "..."}},
-  {{"path": "...", "content": "..."}}
-]
-"""
+            Example format:
+            [
+            {{"path": "...", "content": "..."}},
+            {{"path": "...", "content": "..."}}
+            ]
+            """
         else:
             # Single model
             schema_example = self._get_schema_example(response_schema)
             
             return f"""{original_prompt}
 
-IMPORTANT: Respond with a valid JSON object with these fields:
-{schema_example}
-"""
+            IMPORTANT: Respond with a valid JSON object with these fields:
+            {schema_example}
+            """
     
     def _get_schema_example(self, model_class: Type[BaseModel]) -> str:
         """
