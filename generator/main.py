@@ -1,31 +1,72 @@
+# ============================================
+# FILE: main.py
+# ============================================
 import os
+from pathlib import Path
 from dotenv import load_dotenv
-from clients.gemini_client import GeminiClient
+from core.generator import ComponentGenerator
 
 def main():
-    # Load environment variables from the .env file
+    """CLI entry point for component generation"""
     load_dotenv()
-
-    # Get the API key from the environment variables
+    
+    # Get API key
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("Error: GEMINI_API_KEY is not set in the environment.")
+        print("❌ Error: GEMINI_API_KEY not found in .env")
         return
-
-    # Create an instance of the Gemini client
-    client = GeminiClient(api_key=api_key)
-
-    # Prompt the user for input
-    print("Welcome to the content generator with Gemini.")
-    prompt = input("Please enter the prompt: ")
-
-    # Generate content using the client
+    
+    print("🧩 LLM-based Preact Component Generator")
+    print("=" * 50)
+    
+    # Initialize generator
+    generator = ComponentGenerator(
+        api_key=api_key,
+        output_dir="./output/components"
+    )
+    
+    # Get user input
+    description = input("\n📝 Describe el componente: ")
+    
+    if not description.strip():
+        print("❌ Error: Description cannot be empty")
+        return
+    
     try:
-        response = client.generate(prompt)
-        print("\nGenerated content:")
-        print(response)
-    except RuntimeError as e:
-        print(f"Error generating content: {e}")
+        # Generate component (returns List[ComponentFile])
+        files = generator.generate(description)
+        
+        # Display summary
+        print("\n" + "=" * 50)
+        print("📦 Generation Summary")
+        print(f"📁 Total files: {len(files)}")
+        print()
+        
+        # Show each file
+        for file in files:
+            # Determine file type
+            if ".test." in file.path:
+                file_type = "🧪 Test"
+            else:
+                file_type = "⚛️  Component"
+            
+            # Get file size
+            file_size = len(file.content)
+            
+            print(f"{file_type:12} {file.path}")
+            print(f"             └─ {file_size} characters")
+        
+        # Extract component name from path
+        component_name = Path(files[0].path).stem
+        
+        print()
+        print(f"✨ Component '{component_name}' ready to use!")
+        print(f"📂 Location: ./output/components/")
+        
+    except Exception as e:
+        print(f"\n❌ Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()

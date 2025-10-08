@@ -2,8 +2,12 @@
 # FILE: generator/clients/gemini_client.py
 # ============================================
 from google import genai
+from typing import Type, TypeVar, List, get_origin, get_args
+from pydantic import BaseModel, ValidationError
+import json
 from .base_client import BaseLLMClient
 
+T = TypeVar('T', bound=BaseModel)
 
 class GeminiClient(BaseLLMClient):
     """Client for Google Gemini using the modern API"""
@@ -13,19 +17,18 @@ class GeminiClient(BaseLLMClient):
         Initializes the Gemini client.
         
         Args:
-            api_key: Gemini API key (if None, uses GEMINI_API_KEY from the environment)
+            api_key: Gemini API key
             model: Name of the model to use
         """
-        # If api_key is passed, configure it in the environment
         if not api_key:
-            raise ValueError("GEMINI_API_KEY not found in the environment or as an argument.")
-
+            raise ValueError("GEMINI_API_KEY not found in environment or as argument.")
+        
         self.client = genai.Client(api_key=api_key)
         self.model = model
     
     def generate(self, prompt: str) -> str:
         """
-        Generates content using Gemini.
+        Generates unstructured content using Gemini.
         
         Args:
             prompt: User's prompt
@@ -41,3 +44,164 @@ class GeminiClient(BaseLLMClient):
             return response.text
         except Exception as e:
             raise RuntimeError(f"Error generating content with Gemini: {str(e)}")
+    
+    def generate_structured(
+        self, 
+        prompt: str, 
+        response_schema: Type[T],
+        **kwargs
+    ) -> T:
+        """
+        Generates structured content based on a Pydantic schema.
+        
+        WORKAROUND: Due to SDK issues with response_schema, we generate JSON
+        and parse manually.
+        
+        Args:
+            prompt: User's prompt
+            response_schema: Pydantic model class or List[Model]
+            **kwargs: Additional generation parameters
+            
+        Returns:
+            Parsed object of type response_schema
+        """
+        try:
+            # Build a schema-aware prompt
+            schema_prompt = self._build_schema_prompt(prompt, response_schema)
+            
+            # Generate with JSON mime type but no schema (workaround)
+            config = {
+                "response_mime_type": "application/json",
+            }
+            
+            # Add optional parameters
+            if "temperature" in kwargs:
+                config["temperature"] = kwargs["temperature"]
+            if "max_output_tokens" in kwargs:
+                config["max_output_tokens"] = kwargs["max_output_tokens"]
+            
+            # Generate content
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=schema_prompt,
+                config=config
+            )
+            
+            # Parse the JSON response manually
+            json_text = response.text.strip()
+            
+            # Clean markdown if present
+            if json_text.startswith("```json"):
+                json_text = json_text.split("```json")[1].split("```")[0]
+            elif json_text.startswith("```"):
+                json_text = json_text.split("```")[1].split("```")[0]
+            
+            # Parse JSON
+            data = json.loads(json_text.strip())
+            
+            # Validate with Pydantic
+            return self._validate_with_schema(data, response_schema)
+            
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Invalid JSON from Gemini: {e}\nResponse: {response.text[:500]}")
+        except Exception as e:
+            raise RuntimeError(f"Error generating structured content with Gemini: {str(e)}")
+    
+    def _build_schema_prompt(self, original_prompt: str, response_schema: Type[T]) -> str:
+        """
+        Enhances the prompt with schema information.
+        
+        Args:
+            original_prompt: Original user prompt
+            response_schema: Target schema
+            
+        Returns:
+            Enhanced prompt with schema instructions
+        """
+        # Check if it's a List type
+        origin = get_origin(response_schema)
+        
+        if origin is list:
+            # It's List[SomeModel]
+            inner_type = get_args(response_schema)[0]
+            schema_example = self._get_schema_example(inner_type)
+            
+            return f"""{original_prompt}
+
+IMPORTANT: Respond with a valid JSON array of objects. Each object must have these fields:
+{schema_example}
+
+Example format:
+[
+  {{"path": "...", "content": "..."}},
+  {{"path": "...", "content": "..."}}
+]
+"""
+        else:
+            # Single model
+            schema_example = self._get_schema_example(response_schema)
+            
+            return f"""{original_prompt}
+
+IMPORTANT: Respond with a valid JSON object with these fields:
+{schema_example}
+"""
+    
+    def _get_schema_example(self, model_class: Type[BaseModel]) -> str:
+        """
+        Gets field information from Pydantic model.
+        
+        Args:
+            model_class: Pydantic model class
+            
+        Returns:
+            String describing the fields
+        """
+        if hasattr(model_class, 'model_fields'):
+            fields = model_class.model_fields
+            field_info = []
+            for name, field in fields.items():
+                field_type = field.annotation.__name__ if hasattr(field.annotation, '__name__') else str(field.annotation)
+                field_info.append(f"  - {name}: {field_type}")
+            return "\n".join(field_info)
+        return "  (schema details unavailable)"
+    
+    def _validate_with_schema(self, data, response_schema: Type[T]) -> T:
+        """
+        Validates raw data against Pydantic schema.
+        
+        Args:
+            data: Raw dict or list from JSON
+            response_schema: Target Pydantic schema
+            
+        Returns:
+            Validated Pydantic object(s)
+        """
+        origin = get_origin(response_schema)
+        
+        if origin is list:
+            # List[Model] case
+            inner_type = get_args(response_schema)[0]
+            
+            if not isinstance(data, list):
+                raise ValueError(f"Expected list, got {type(data)}")
+            
+            # Validate each item
+            validated_items = []
+            for i, item in enumerate(data):
+                try:
+                    validated_items.append(inner_type(**item))
+                except ValidationError as e:
+                    raise ValueError(f"Validation error in item {i}: {e}")
+            
+            return validated_items
+        
+        else:
+            # Single model case
+            if not isinstance(data, dict):
+                raise ValueError(f"Expected dict, got {type(data)}")
+            
+            try:
+                return response_schema(**data)
+            except ValidationError as e:
+                raise ValueError(f"Pydantic validation failed: {e}")
